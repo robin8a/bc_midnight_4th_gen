@@ -1,0 +1,21 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+export ledger message: Opaque<"string">;
+export ledger redeemCount: Counter;
+
+export circuit storeMessage(newMessage: Opaque<"string">): [] {
+  message = disclose(newMessage);
+}
+
+export circuit redeemDeed(buyer: UserAddress): [] {
+  const deedDomain = pad(32, "terra:inception:deed");
+  receiveUnshielded(default<Bytes<32>>, 1);
+  mintUnshieldedToken(
+    deedDomain,
+    1,
+    disclose(right<ContractAddress, UserAddress>(disclose(buyer)))
+  );
+  redeemCount.increment(1);
+}
