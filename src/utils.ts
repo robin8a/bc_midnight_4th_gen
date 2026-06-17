@@ -7,6 +7,7 @@ import {
   type EnvironmentConfiguration,
   waitForFunds,
 } from '@midnight-ntwrk/testkit-js';
+import * as Rx from 'rxjs';
 import pino from 'pino';
 
 import { getConfig } from './config.js';
@@ -79,6 +80,155 @@ export function saveDeployment(info: DeploymentInfo): void {
   writeFileSync(DEPLOYMENT_FILE, `${JSON.stringify(info, null, 2)}\n`);
 }
 
+export async function waitForProofServer(
+  proofServerUrl: string,
+  maxAttempts = 90,
+  delayMs = 2000,
+): Promise<void> {
+  const base = proofServerUrl.replace(/\/$/, '');
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const health = await fetch(`${base}/`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!health.ok) {
+        throw new Error(`health check returned ${health.status}`);
+      }
+
+      // GET / only proves the HTTP port is open. The proof server downloads
+      // large ZK artifacts on first boot; /prove can fail with transport
+      // errors until that finishes. A 4xx response means /prove is accepting
+      // connections and parsing requests.
+      const prove = await fetch(`${base}/prove`, {
+        method: 'POST',
+        body: new Uint8Array([0]),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (prove.status >= 400 && prove.status < 500) {
+        logger.info('Proof server is ready (/prove accepting requests)');
+        return;
+      }
+      throw new Error(`/prove returned ${prove.status}`);
+    } catch (err: unknown) {
+      const code =
+        (err as { cause?: { code?: string }; code?: string })?.cause?.code ||
+        (err as { code?: string })?.code ||
+        '';
+      const retriable =
+        code === 'ECONNREFUSED' ||
+        code === 'UND_ERR_CONNECT_TIMEOUT' ||
+        code === 'UND_ERR_SOCKET' ||
+        code === 'ETIMEDOUT' ||
+        (err instanceof Error && err.message.includes('/prove returned'));
+
+      if (!retriable && attempt > 1) {
+        throw err;
+      }
+    }
+
+    if (attempt < maxAttempts) {
+      logger.info(
+        `Waiting for proof server (downloading ZK keys on first boot)... (${attempt}/${maxAttempts})`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+
+  throw new Error(
+    `Proof server not ready at ${proofServerUrl}. ` +
+      'Run: npm run env:up — first boot can take several minutes.',
+  );
+}
+
+export async function ensureDustRegistration(
+  wallet: MidnightWalletProvider,
+): Promise<void> {
+  const state = await Rx.firstValueFrom(
+    wallet.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+  );
+
+  const unregistered = state.unshielded.availableCoins.filter(
+    (coin: { meta?: { registeredForDustGeneration?: boolean } }) =>
+      !coin.meta?.registeredForDustGeneration,
+  );
+
+  if (unregistered.length > 0) {
+    logger.info(`Registering ${unregistered.length} NIGHT UTXO(s) for DUST...`);
+    const recipe = await wallet.wallet.registerNightUtxosForDustGeneration(
+      unregistered,
+      wallet.unshieldedKeystore.getPublicKey(),
+      (payload) => wallet.unshieldedKeystore.signData(payload),
+    );
+    const finalized = await wallet.wallet.finalizeRecipe(recipe);
+    await wallet.wallet.submitTransaction(finalized);
+  }
+
+  const dustBalance = state.dust.balance(new Date());
+  if (dustBalance === 0n) {
+    logger.info('Waiting for DUST balance...');
+    await Rx.firstValueFrom(
+      wallet.wallet.state().pipe(
+        Rx.filter((s) => s.isSynced),
+        Rx.filter((s) => s.dust.balance(new Date()) > 0n),
+      ),
+    );
+  }
+
+  // Fresh devnet: wall-clock DUST projection can lag block time by ~1 block.
+  await new Promise((r) => setTimeout(r, 6000));
+}
+
+function deployErrorText(err: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof Error) {
+      parts.push(current.message);
+      current = current.cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+  }
+
+  return parts.join(' ');
+}
+
+export function assertNodeVersion(minMajor = 22, minMinor = 19, minPatch = 0): void {
+  const match = process.version.match(/^v(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return;
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  const ok =
+    major > minMajor ||
+    (major === minMajor && minor > minMinor) ||
+    (major === minMajor && minor === minMinor && patch >= minPatch);
+
+  if (!ok) {
+    throw new Error(
+      `Node ${process.version} is too old. Use Node >=${minMajor}.${minMinor}.${minPatch} ` +
+        '(run: nvm install 22 && nvm use 22).',
+    );
+  }
+}
+
+export function isRetriableDeployError(err: unknown): boolean {
+  const full = deployErrorText(err).toLowerCase();
+  return (
+    full.includes('not enough dust') ||
+    full.includes('insufficient funds') ||
+    full.includes('failed to connect to proof server') ||
+    full.includes('transport error')
+  );
+}
+
 export async function setupWalletAndProviders(): Promise<{
   wallet: MidnightWalletProvider;
   providers: InceptionDeedProviders;
@@ -122,6 +272,9 @@ export async function setupWalletAndProviders(): Promise<{
 
   const providers = buildProviders(wallet, zkConfigPath, config);
   logger.info(`Providers initialized on '${network}'.`);
+
+  await waitForProofServer(config.proofServer);
+  await ensureDustRegistration(wallet);
 
   return { wallet, providers, config };
 }
