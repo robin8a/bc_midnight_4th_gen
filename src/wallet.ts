@@ -12,11 +12,20 @@ import {
   type WalletProvider,
 } from '@midnight-ntwrk/midnight-js-types';
 import { ttlOneHour } from '@midnight-ntwrk/midnight-js-utils';
-import { type WalletFacade, type FacadeState } from '@midnight-ntwrk/wallet-sdk-facade';
+import { makeWasmProvingService } from '@midnight-ntwrk/wallet-sdk-capabilities/proving';
+import {
+  InMemoryTransactionHistoryStorage,
+  WalletEntrySchema,
+  WalletFacade,
+  createKeystore,
+  mergeWalletEntries,
+  type FacadeState,
+} from '@midnight-ntwrk/wallet-sdk';
 import {
   type DustWalletOptions,
   type EnvironmentConfiguration,
-  FluentWalletBuilder,
+  WalletFactory,
+  WalletSeeds,
 } from '@midnight-ntwrk/testkit-js';
 import type { UnshieldedKeystore } from '@midnight-ntwrk/wallet-sdk';
 import * as Rx from 'rxjs';
@@ -25,6 +34,41 @@ import type { Logger } from 'pino';
 export type WalletSecret =
   | { kind: 'seed'; value: string }
   | { kind: 'mnemonic'; value: string };
+
+type WalletConfiguration = {
+  indexerClientConnection: {
+    indexerHttpUrl: string;
+    indexerWsUrl: string;
+  };
+  provingServerUrl: URL;
+  networkId: string;
+  relayURL: URL;
+  txHistoryStorage: InMemoryTransactionHistoryStorage;
+  costParameters: {
+    ledgerParams?: ReturnType<typeof LedgerParameters.initialParameters>;
+    additionalFeeOverhead?: bigint;
+    feeBlocksMargin: number;
+  };
+};
+
+function mapEnvironmentToConfiguration(env: EnvironmentConfiguration): WalletConfiguration {
+  return {
+    indexerClientConnection: {
+      indexerHttpUrl: env.indexer,
+      indexerWsUrl: env.indexerWS,
+    },
+    provingServerUrl: new URL(env.proofServer),
+    networkId: env.walletNetworkId,
+    relayURL: new URL(env.nodeWS),
+    txHistoryStorage: new InMemoryTransactionHistoryStorage(
+      WalletEntrySchema,
+      mergeWalletEntries,
+    ),
+    costParameters: {
+      feeBlocksMargin: 5,
+    },
+  };
+}
 
 export class MidnightWalletProvider implements MidnightProvider, WalletProvider {
   readonly wallet: WalletFacade;
@@ -88,25 +132,40 @@ export class MidnightWalletProvider implements MidnightProvider, WalletProvider 
       feeBlocksMargin: 5,
     };
 
-    const base = FluentWalletBuilder.forEnvironment(env).withDustOptions(dustOptions);
-    const builder =
+    const seeds =
       secret.kind === 'mnemonic'
-        ? base.withMnemonic(secret.value)
-        : base.withSeed(secret.value);
+        ? WalletSeeds.fromMnemonic(secret.value)
+        : WalletSeeds.fromMasterSeed(secret.value);
 
-    const buildResult = await builder.buildWithoutStarting();
-    const { wallet, seeds, keystore } = buildResult as {
-      wallet: WalletFacade;
-      seeds: {
-        masterSeed: string;
-        shielded: Uint8Array;
-        dust: Uint8Array;
-      };
-      keystore: UnshieldedKeystore;
+    const config = mapEnvironmentToConfiguration(env);
+    config.costParameters = {
+      ledgerParams: dustOptions.ledgerParams,
+      additionalFeeOverhead: dustOptions.additionalFeeOverhead,
+      feeBlocksMargin: dustOptions.feeBlocksMargin,
     };
 
+    const keystore = createKeystore(seeds.unshielded, env.walletNetworkId);
+    const shieldedWallet = WalletFactory.createShieldedWallet(config, seeds.shielded);
+    const unshieldedWallet = WalletFactory.createUnshieldedWallet(config, keystore);
+    const dustWallet = WalletFactory.createDustWallet(config, seeds.dust, dustOptions);
+
+    // Wallet SDK's HTTP prover (Effect fetch) can fail with transport errors on
+    // large /prove payloads on some Node setups. WASM proving is more reliable
+    // locally. Contract circuit proofs still use httpClientProofProvider.
+    const useWasmWalletProver = process.env['MIDNIGHT_WALLET_WASM_PROVER'] !== '0';
+    const wallet = await WalletFacade.init({
+      configuration: config,
+      shielded: () => shieldedWallet,
+      unshielded: () => unshieldedWallet,
+      dust: () => dustWallet,
+      ...(useWasmWalletProver
+        ? { provingService: () => makeWasmProvingService() }
+        : {}),
+    });
+
     logger.info(
-      `Wallet built from ${secret.kind}; master seed: ${seeds.masterSeed.slice(0, 8)}...`,
+      `Wallet built from ${secret.kind}; master seed: ${seeds.masterSeed.slice(0, 8)}... ` +
+        `(wallet prover: ${useWasmWalletProver ? 'wasm' : 'http'})`,
     );
 
     return new MidnightWalletProvider(

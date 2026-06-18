@@ -51,29 +51,30 @@ See [_inception/README.md](_inception/README.md) for full details.
 
 ### `Failed to connect to Proof Server` / `Transport error (POST .../prove)`
 
-This means ZK proof generation failed. Your log showed `Proof server is ready` on **GET /** only — the server can still be downloading ZK keys on first boot.
+This usually means the **wallet's HTTP prover** failed to POST a large proof payload (small probe requests can still succeed).
 
-**Fix:**
+**Fix (already applied in this repo):** the wallet uses a **local WASM prover** by default. You should see `(wallet prover: wasm)` in deploy logs.
 
 ```bash
-nvm use 22              # must be v22.19+ (you had v22.14.0)
-node --version
-
+nvm use 22
 npm run env:up
-# Wait until this returns HTTP 400 (not connection error):
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:6300/prove -d ''
-
 npm run deploy
 ```
 
-`npm run deploy` now waits until **POST /prove** responds (not just GET /) and retries on transport errors.
+Contract circuit proofs still use the Docker proof server via `httpClientProofProvider`.
 
-If it still fails after ~3 minutes:
+To revert to HTTP wallet proving (not recommended locally):
 
 ```bash
-npm run env:down
-npm run env:up
-# watch proof-server logs until you see "listening on: 0.0.0.0:6300"
+MIDNIGHT_WALLET_WASM_PROVER=0 npm run deploy
+```
+
+If deploy still fails:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:6300/prove -d ''
+# expect 400
+
 docker compose logs -f proof-server
 ```
 

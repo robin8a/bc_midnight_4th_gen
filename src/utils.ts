@@ -189,11 +189,18 @@ function deployErrorText(err: unknown): string {
     seen.add(current);
     if (current instanceof Error) {
       parts.push(current.message);
-      current = current.cause;
-    } else {
-      parts.push(String(current));
+      if ('cause' in current && current.cause !== undefined) {
+        current = current.cause;
+        continue;
+      }
       break;
     }
+    if (typeof current === 'object') {
+      parts.push(JSON.stringify(current));
+      break;
+    }
+    parts.push(String(current));
+    break;
   }
 
   return parts.join(' ');
