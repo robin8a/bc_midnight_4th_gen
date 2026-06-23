@@ -16,7 +16,7 @@ import {
   syncWallet,
   type WalletSecret,
 } from './wallet.js';
-import { buildProviders, type InceptionDeedProviders } from './providers.js';
+import { buildProviders, privateStateStoreNameForNetwork, type InceptionDeedProviders } from './providers.js';
 import { zkConfigPath } from '../contracts/index.js';
 
 // @ts-expect-error WebSocket global assignment for apollo
@@ -277,7 +277,12 @@ export async function setupWalletAndProviders(): Promise<{
     logger.info(`Wallet NIGHT balance on '${network}': ${nightBalance}`);
   }
 
-  const providers = buildProviders(wallet, zkConfigPath, config);
+  const providers = buildProviders(
+    wallet,
+    zkConfigPath,
+    config,
+    privateStateStoreNameForNetwork(network),
+  );
   logger.info(`Providers initialized on '${network}'.`);
 
   await waitForProofServer(config.proofServer);

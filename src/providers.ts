@@ -14,12 +14,18 @@ export type InceptionDeedProviders = MidnightProviders<
   Record<string, never>
 >;
 
+export function privateStateStoreNameForNetwork(network: string): string {
+  return `inception-deed-${network}`;
+}
+
 export function buildProviders(
   wallet: MidnightWalletProvider,
   zkConfigPath: string,
   config: NetworkConfig,
-  privateStateStoreName = `inception-deed-${Date.now()}`,
+  privateStateStoreName?: string,
 ): InceptionDeedProviders {
+  const storeName =
+    privateStateStoreName ?? privateStateStoreNameForNetwork(config.networkId);
   const zkConfigProvider = new NodeZkConfigProvider<InceptionDeedCircuits>(zkConfigPath);
 
   return {

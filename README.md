@@ -49,6 +49,31 @@ See [_inception/README.md](_inception/README.md) for full details.
 
 ## Troubleshooting
 
+### `Wallet.Sync` during deploy
+
+Deploy waits for wallet sync before submitting any transaction. Repeating `Wallet.Sync: [object Object]` means the wallet cannot subscribe to the **indexer** (shielded, unshielded, and DUST sub-wallets all fail).
+
+**Fix:**
+
+```bash
+npm run env:down
+npm run env:up          # wait until all 3 containers are healthy
+sleep 30              # indexer may need time to catch up with the node
+npm run deploy
+```
+
+**Verify services:**
+
+```bash
+docker compose ps
+curl -sf http://127.0.0.1:9944/health
+curl -sf -X POST http://127.0.0.1:8088/api/v4/graphql \
+  -H 'content-type: application/json' -d '{"query":"{ __typename }"}'
+docker compose logs --tail=50 indexer
+```
+
+The deploy script now probes node + indexer readiness before starting the wallet. Wallet sync uses `state.isSynced` (not `isStrictlyComplete`) to avoid a known DUST hang on idle local chains.
+
 ### `Failed to connect to Proof Server` / `Transport error (POST .../prove)`
 
 This usually means the **wallet's HTTP prover** failed to POST a large proof payload (small probe requests can still succeed).
