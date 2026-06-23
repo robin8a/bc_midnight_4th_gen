@@ -105,7 +105,10 @@ export class MidnightWalletProvider implements MidnightProvider, WalletProvider 
       },
       { ttl },
     );
-    return await this.wallet.finalizeRecipe(recipe);
+    const signed = await this.wallet.signRecipe(recipe, (payload) =>
+      this.unshieldedKeystore.signData(payload),
+    );
+    return await this.wallet.finalizeRecipe(signed);
   }
 
   submitTx(tx: FinalizedTransaction): Promise<string> {

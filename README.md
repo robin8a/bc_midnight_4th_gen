@@ -74,6 +74,16 @@ docker compose logs --tail=50 indexer
 
 The deploy script now probes node + indexer readiness before starting the wallet. Wallet sync uses `state.isSynced` (not `isStrictlyComplete`) to avoid a known DUST hang on idle local chains.
 
+### `Custom error: 192` on redeem
+
+```
+RpcError: 1010: Invalid Transaction: Custom error: 192
+```
+
+Error **192** = `InputsSignaturesLengthMismatch` ([node error codes](https://docs.midnight.network/nodes/error-codes)). `redeemDeed` spends 1 NIGHT via `receiveUnshielded`, so the wallet must sign unshielded inputs before submit.
+
+`balanceTx` in `src/wallet.ts` must call `signRecipe` between `balanceUnboundTransaction` and `finalizeRecipe` (matching `@midnight-ntwrk/testkit-js`).
+
 ### `Failed to connect to Proof Server` / `Transport error (POST .../prove)`
 
 This usually means the **wallet's HTTP prover** failed to POST a large proof payload (small probe requests can still succeed).
