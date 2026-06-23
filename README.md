@@ -2,6 +2,41 @@
 
 A minimal [Midnight Network](https://midnight.network/) smart contract: **pay 1 NIGHT, receive 1 unshielded deed token**, plus a Hello World public message store.
 
+```mermaid
+flowchart TB
+    Dev(["Developer"])
+
+    subgraph App["This project"]
+        direction TB
+        Deploy["deploy.ts"]
+        Store["store-message.ts"]
+        Redeem["redeem.ts"]
+        Contract["inception-deed.compact"]
+    end
+
+    subgraph Stack["Midnight local stack (docker compose)"]
+        Wallet["Wallet"]
+        Proof["Proof Server :6300"]
+        Indexer["Indexer :8088"]
+        Node["Node :9944"]
+    end
+
+    Dev --> Deploy & Store & Redeem
+    Deploy & Store & Redeem --> Wallet
+    Wallet <-->|sync| Indexer
+    Indexer <--> Node
+    Wallet -->|circuit ZK proofs| Proof
+    Wallet -->|submit tx + DUST fee| Node
+    Contract -.->|deployed on chain| Node
+
+    Store -->|"storeMessage circuit"| Msg[("ledger.message<br/>e.g. Hello World!")]
+    Redeem -->|"redeemDeed circuit"| Deed["receive 1 NIGHT<br/>mint 1 unshielded deed"]
+    Contract --- Store
+    Contract --- Redeem
+```
+
+**Hello World flow:** `storeMessage` takes a private string, discloses it on-chain, and writes the public `message` ledger. **Deed flow:** `redeemDeed` atomically pulls 1 NIGHT from the caller and mints 1 unshielded deed token to their wallet.
+
 ## Quick start
 
 ```bash
